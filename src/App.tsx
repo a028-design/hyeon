@@ -16,7 +16,7 @@ import { MetricsExplorer } from './components/MetricsExplorer';
 import { NotFoundView } from './components/NotFoundView';
 import { RequestView } from './components/RequestView';
 import { SummaryReportView } from './components/SummaryReportView';
-import { COMPANIES } from './data/companiesData';
+import { COMPANIES, type CompanyProfile } from './data/companiesData';
 
 const BOOKMARK_STORAGE_KEY = 'valuenote_bookmarked_companies_v1';
 
@@ -27,12 +27,48 @@ interface RouteState {
   requestPrefill: string;
 }
 
-function parseHashRoute(hash: string): RouteState {
-  const cleaned = hash.replace(/^#/, '').trim();
+function parseCurrentRoute(companies: CompanyProfile[]): RouteState {
+  const pathname = window.location.pathname;
+  const searchParams = new URLSearchParams(window.location.search);
+  const queryCompany = searchParams.get('company')?.trim() ?? '';
+
+  // Handle non-root invalid paths (REQ-14)
+  if (pathname !== '/' && pathname !== '/index.html') {
+    const cleanPath = decodeURIComponent(pathname.replace(/^\/+/, ''));
+    return {
+      view: 'not-found',
+      companyCode: companies[0].code,
+      notFoundQuery: cleanPath,
+      requestPrefill: '',
+    };
+  }
+
+  // Handle ?company=... query param
+  if (queryCompany) {
+    const foundByQuery = companies.find(
+      (c) => c.code === queryCompany || c.name.toLowerCase() === queryCompany.toLowerCase()
+    );
+    if (foundByQuery) {
+      return {
+        view: 'summary',
+        companyCode: foundByQuery.code,
+        notFoundQuery: '',
+        requestPrefill: '',
+      };
+    }
+    return {
+      view: 'not-found',
+      companyCode: companies[0].code,
+      notFoundQuery: queryCompany,
+      requestPrefill: '',
+    };
+  }
+
+  const cleaned = window.location.hash.replace(/^#/, '').trim();
   if (!cleaned || cleaned === 'home' || cleaned === 'top') {
     return {
       view: 'home',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -41,7 +77,7 @@ function parseHashRoute(hash: string): RouteState {
   if (cleaned === 'explore') {
     return {
       view: 'explore',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -50,7 +86,7 @@ function parseHashRoute(hash: string): RouteState {
   if (cleaned === 'glossary') {
     return {
       view: 'glossary',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -59,7 +95,7 @@ function parseHashRoute(hash: string): RouteState {
   if (cleaned === 'request') {
     return {
       view: 'request',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -68,7 +104,7 @@ function parseHashRoute(hash: string): RouteState {
   if (cleaned === 'summary') {
     return {
       view: 'summary',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -76,7 +112,7 @@ function parseHashRoute(hash: string): RouteState {
 
   if (cleaned.startsWith('summary/')) {
     const code = decodeURIComponent(cleaned.slice('summary/'.length));
-    const found = COMPANIES.find((c) => c.code === code);
+    const found = companies.find((c) => c.code === code);
     if (found) {
       return {
         view: 'summary',
@@ -87,17 +123,26 @@ function parseHashRoute(hash: string): RouteState {
     }
     return {
       view: 'not-found',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: code,
       requestPrefill: '',
     };
   }
 
-  // Allow in-page anchor hashes on home view
+  if (cleaned.startsWith('not-found/')) {
+    const q = decodeURIComponent(cleaned.slice('not-found/'.length));
+    return {
+      view: 'not-found',
+      companyCode: companies[0].code,
+      notFoundQuery: q,
+      requestPrefill: '',
+    };
+  }
+
   if (['indicators', 'health-criteria', 'simulator', 'checklist', 'bookmarks'].includes(cleaned)) {
     return {
       view: 'home',
-      companyCode: COMPANIES[0].code,
+      companyCode: companies[0].code,
       notFoundQuery: '',
       requestPrefill: '',
     };
@@ -105,14 +150,15 @@ function parseHashRoute(hash: string): RouteState {
 
   return {
     view: 'not-found',
-    companyCode: COMPANIES[0].code,
+    companyCode: companies[0].code,
     notFoundQuery: cleaned,
     requestPrefill: '',
   };
 }
 
 export default function App() {
-  const [route, setRoute] = useState<RouteState>(() => parseHashRoute(window.location.hash));
+  const [companies, setCompanies] = useState<CompanyProfile[]>(COMPANIES);
+  const [route, setRoute] = useState<RouteState>(() => parseCurrentRoute(COMPANIES));
   const [bookmarkedCodes, setBookmarkedCodes] = useState<string[]>(() => {
     try {
       const raw = window.localStorage.getItem(BOOKMARK_STORAGE_KEY);
@@ -125,12 +171,33 @@ export default function App() {
   });
 
   useEffect(() => {
-    const handleHashChange = () => {
-      setRoute(parseHashRoute(window.location.hash));
+    let active = true;
+    fetch('/api/companies')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && Array.isArray(data.companies) && data.companies.length > 0) {
+          setCompanies(data.companies);
+        }
+      })
+      .catch(() => {
+        // Keep initial baseline companies on offline fallback
+      });
+    return () => {
+      active = false;
     };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  useEffect(() => {
+    const handleRouteChange = () => {
+      setRoute(parseCurrentRoute(companies));
+    };
+    window.addEventListener('hashchange', handleRouteChange);
+    window.addEventListener('popstate', handleRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', handleRouteChange);
+      window.removeEventListener('popstate', handleRouteChange);
+    };
+  }, [companies]);
 
   useEffect(() => {
     try {
@@ -140,37 +207,45 @@ export default function App() {
     }
   }, [bookmarkedCodes]);
 
+  const syncCleanUrl = (hashValue: string) => {
+    if (window.location.pathname !== '/' || window.location.search) {
+      window.history.replaceState(null, '', `/#${hashValue}`);
+    } else {
+      window.location.hash = hashValue;
+    }
+  };
+
   const navigateView = (view: AppView) => {
     if (view === 'summary') {
-      const code = route.companyCode || COMPANIES[0].code;
-      window.location.hash = `summary/${code}`;
+      const code = route.companyCode || companies[0].code;
+      syncCleanUrl(`summary/${code}`);
       setRoute((prev) => ({ ...prev, view: 'summary', companyCode: code }));
     } else {
-      window.location.hash = view;
+      syncCleanUrl(view);
       setRoute((prev) => ({ ...prev, view, requestPrefill: '' }));
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const openCompanySummary = (code: string) => {
-    const exists = COMPANIES.find((c) => c.code === code);
+    const exists = companies.find((c) => c.code === code);
     if (!exists) {
       openNotFound(code);
       return;
     }
-    window.location.hash = `summary/${code}`;
+    syncCleanUrl(`summary/${code}`);
     setRoute((prev) => ({ ...prev, view: 'summary', companyCode: code }));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const openNotFound = (query: string) => {
-    window.location.hash = `not-found/${encodeURIComponent(query)}`;
+    syncCleanUrl(`not-found/${encodeURIComponent(query)}`);
     setRoute((prev) => ({ ...prev, view: 'not-found', notFoundQuery: query }));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const goToRequestWithPrefill = (prefillName?: string) => {
-    window.location.hash = 'request';
+    syncCleanUrl('request');
     setRoute((prev) => ({
       ...prev,
       view: 'request',
@@ -188,7 +263,7 @@ export default function App() {
   const scrollToHomeSection = (sectionId: string) => {
     if (route.view !== 'home') {
       setRoute((prev) => ({ ...prev, view: 'home' }));
-      window.location.hash = 'home';
+      syncCleanUrl('home');
       window.setTimeout(() => {
         document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 60);
@@ -198,7 +273,7 @@ export default function App() {
   };
 
   const selectedCompany =
-    COMPANIES.find((c) => c.code === route.companyCode) ?? COMPANIES[0];
+    companies.find((c) => c.code === route.companyCode) ?? companies[0];
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">

@@ -1,4 +1,4 @@
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { evaluateTrafficLight, type TrafficLightResult } from '../data/companiesData';
 import { TrafficLightGraphic } from './TrafficLightGraphic';
@@ -11,6 +11,16 @@ interface FormErrors {
   companyName?: string;
   ticker?: string;
   email?: string;
+  submit?: string;
+}
+
+interface PersistedRequestItem {
+  id: string;
+  companyName: string;
+  ticker: string;
+  maskedEmail: string;
+  status: string;
+  createdAt: string;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,11 +31,9 @@ export function RequestView({ initialCompanyName = '' }: RequestViewProps) {
   const [ticker, setTicker] = useState('');
   const [email, setEmail] = useState('');
   const [errors, setErrors] = useState<FormErrors>({});
-  const [submittedData, setSubmittedData] = useState<{
-    companyName: string;
-    ticker: string;
-    email: string;
-  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittedData, setSubmittedData] = useState<PersistedRequestItem | null>(null);
+  const [recentRequests, setRecentRequests] = useState<PersistedRequestItem[]>([]);
 
   useEffect(() => {
     if (initialCompanyName) {
@@ -33,6 +41,23 @@ export function RequestView({ initialCompanyName = '' }: RequestViewProps) {
       setSubmittedData(null);
     }
   }, [initialCompanyName]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/requests')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && Array.isArray(data.requests)) {
+          setRecentRequests(data.requests);
+        }
+      })
+      .catch(() => {
+        // Ignore network errors when backend is unavailable
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // REQ-13: Traffic-light rule mini calculator state
   const [calcMargin, setCalcMargin] = useState('12.0');
@@ -43,7 +68,7 @@ export function RequestView({ initialCompanyName = '' }: RequestViewProps) {
   );
   const [calcError, setCalcError] = useState('');
 
-  const handleRequestSubmit = (e: React.FormEvent) => {
+  const handleRequestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const nextErrors: FormErrors = {};
 
@@ -66,16 +91,42 @@ export function RequestView({ initialCompanyName = '' }: RequestViewProps) {
     }
 
     setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
 
-    if (Object.keys(nextErrors).length === 0) {
-      setSubmittedData({
-        companyName: trimmedName,
-        ticker: trimmedTicker,
-        email: trimmedEmail,
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyName: trimmedName,
+          ticker: trimmedTicker,
+          email: trimmedEmail,
+        }),
       });
-      setCompanyName('');
-      setTicker('');
-      setEmail('');
+
+      const payload = await res.json();
+      if (!res.ok) {
+        if (payload?.errors) {
+          setErrors(payload.errors);
+        } else {
+          setErrors({ submit: '요청 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' });
+        }
+        return;
+      }
+
+      if (payload?.request) {
+        setSubmittedData(payload.request);
+        setRecentRequests((prev) => [payload.request, ...prev].slice(0, 10));
+        setCompanyName('');
+        setTicker('');
+        setEmail('');
+        setErrors({});
+      }
+    } catch {
+      setErrors({ submit: '서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.' });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -105,127 +156,166 @@ export function RequestView({ initialCompanyName = '' }: RequestViewProps) {
             찾는 기업이 없다면 직접 요청하고 기준을 체험해 보세요
           </h1>
           <p className="mt-2.5 text-sm sm:text-base text-slate-600 leading-relaxed">
-            아직 등록되지 않은 상장사 분석을 신청하면 3분 요약 리포트 업데이트 시 안내해 드립니다.
+            아직 등록되지 않은 상장사 분석을 신청하면 서버에 안전하게 접수되며 업데이트 시 안내해 드립니다.
             오른쪽 미니 계산기로 신호등 판정 공식을 직접 테스트해 볼 수도 있습니다.
           </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* REQ-09: Analysis Request Form */}
-          <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
-            <h2 className="font-serif text-xl font-bold text-slate-950 mb-1">
-              미등록 기업 분석 요청
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-500 mb-6">
-              기업명과 알림 받으실 이메일을 입력해 주세요.
-            </p>
+          {/* REQ-09: Analysis Request Form + Persisted Recent Requests */}
+          <div className="lg:col-span-6 space-y-6">
+            <div className="bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
+              <h2 className="font-serif text-xl font-bold text-slate-950 mb-1">
+                미등록 기업 분석 요청
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 mb-6">
+                기업명과 알림 받으실 이메일을 입력해 주세요.
+              </p>
 
-            {submittedData && (
-              <div
-                role="status"
-                className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3"
-              >
-                <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
-                <div className="text-sm text-emerald-950">
-                  <p className="font-semibold">분석 요청이 정상 접수되었습니다.</p>
-                  <p className="mt-1 text-xs text-emerald-900 leading-relaxed">
-                    요청 기업: <strong>{submittedData.companyName}</strong>
-                    {submittedData.ticker ? ` (${submittedData.ticker})` : ''} · 안내 이메일:{' '}
-                    <span className="font-mono">{submittedData.email}</span>
-                  </p>
+              {submittedData && (
+                <div
+                  role="status"
+                  className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3"
+                >
+                  <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
+                  <div className="text-sm text-emerald-950">
+                    <p className="font-semibold">분석 요청이 서버에 정상 저장되었습니다.</p>
+                    <p className="mt-1 text-xs text-emerald-900 leading-relaxed">
+                      요청 기업: <strong>{submittedData.companyName}</strong>
+                      {submittedData.ticker ? ` (${submittedData.ticker})` : ''} · 안내 이메일:{' '}
+                      <span className="font-mono">{submittedData.maskedEmail}</span>
+                    </p>
+                  </div>
                 </div>
+              )}
+
+              <form onSubmit={handleRequestSubmit} noValidate className="space-y-5">
+                <div>
+                  <label htmlFor="req-company-name" className="block text-sm font-medium text-slate-900 mb-1.5">
+                    기업명 <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    id="req-company-name"
+                    type="text"
+                    value={companyName}
+                    onChange={(e) => {
+                      setCompanyName(e.target.value);
+                      if (errors.companyName) setErrors((prev) => ({ ...prev, companyName: undefined }));
+                    }}
+                    placeholder="예: 포스코홀딩스"
+                    aria-invalid={Boolean(errors.companyName)}
+                    className={`w-full px-3.5 py-2.5 text-sm rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
+                      errors.companyName
+                        ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
+                        : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
+                    }`}
+                  />
+                  {errors.companyName && (
+                    <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
+                      {errors.companyName}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label htmlFor="req-ticker" className="block text-sm font-medium text-slate-900 mb-1.5">
+                    종목코드 <span className="text-xs font-normal text-slate-500">(선택)</span>
+                  </label>
+                  <input
+                    id="req-ticker"
+                    type="text"
+                    value={ticker}
+                    onChange={(e) => {
+                      setTicker(e.target.value);
+                      if (errors.ticker) setErrors((prev) => ({ ...prev, ticker: undefined }));
+                    }}
+                    placeholder="예: 005490 (6자리)"
+                    aria-invalid={Boolean(errors.ticker)}
+                    className={`w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
+                      errors.ticker
+                        ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
+                        : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
+                    }`}
+                  />
+                  {errors.ticker && (
+                    <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
+                      {errors.ticker}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label htmlFor="req-email" className="block text-sm font-medium text-slate-900 mb-1.5">
+                    알림 받을 이메일 <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    id="req-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
+                    }}
+                    placeholder="example@email.com"
+                    aria-invalid={Boolean(errors.email)}
+                    className={`w-full px-3.5 py-2.5 text-sm rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
+                      errors.email
+                        ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
+                        : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
+                    }`}
+                  />
+                  {errors.email && (
+                    <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
+                      {errors.email}
+                    </p>
+                  )}
+                </div>
+
+                {errors.submit && (
+                  <p role="alert" className="text-xs font-medium text-red-600">
+                    {errors.submit}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full py-3 px-4 text-sm font-semibold text-white bg-blue-900 hover:bg-blue-800 disabled:opacity-60 rounded-lg transition-colors cursor-pointer min-h-[44px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-900"
+                >
+                  {isSubmitting ? '요청 저장 중...' : '기업 분석 요청 제출하기'}
+                </button>
+              </form>
+            </div>
+
+            {recentRequests.length > 0 && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6">
+                <div className="flex items-center justify-between gap-2 mb-4">
+                  <h3 className="text-sm font-bold text-slate-950">최근 접수된 분석 요청</h3>
+                  <span className="text-xs font-mono tabular-nums text-slate-500">
+                    {recentRequests.length}건
+                  </span>
+                </div>
+                <ul className="divide-y divide-slate-100">
+                  {recentRequests.slice(0, 5).map((req) => (
+                    <li key={req.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <span className="font-semibold text-slate-900">{req.companyName}</span>
+                        {req.ticker && (
+                          <span className="ml-1.5 font-mono text-slate-500">{req.ticker}</span>
+                        )}
+                        <span className="block text-slate-500 font-mono mt-0.5">
+                          {req.maskedEmail}
+                        </span>
+                      </div>
+                      <span className="inline-flex items-center gap-1 text-emerald-800 font-medium whitespace-nowrap shrink-0">
+                        <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{req.status}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
-
-            <form onSubmit={handleRequestSubmit} noValidate className="space-y-5">
-              <div>
-                <label htmlFor="req-company-name" className="block text-sm font-medium text-slate-900 mb-1.5">
-                  기업명 <span className="text-red-600">*</span>
-                </label>
-                <input
-                  id="req-company-name"
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => {
-                    setCompanyName(e.target.value);
-                    if (errors.companyName) setErrors((prev) => ({ ...prev, companyName: undefined }));
-                  }}
-                  placeholder="예: 포스코홀딩스"
-                  aria-invalid={Boolean(errors.companyName)}
-                  className={`w-full px-3.5 py-2.5 text-sm rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
-                    errors.companyName
-                      ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
-                      : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
-                  }`}
-                />
-                {errors.companyName && (
-                  <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
-                    {errors.companyName}
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label htmlFor="req-ticker" className="block text-sm font-medium text-slate-900 mb-1.5">
-                  종목코드 <span className="text-xs font-normal text-slate-500">(선택)</span>
-                </label>
-                <input
-                  id="req-ticker"
-                  type="text"
-                  value={ticker}
-                  onChange={(e) => {
-                    setTicker(e.target.value);
-                    if (errors.ticker) setErrors((prev) => ({ ...prev, ticker: undefined }));
-                  }}
-                  placeholder="예: 005490 (6자리)"
-                  aria-invalid={Boolean(errors.ticker)}
-                  className={`w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
-                    errors.ticker
-                      ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
-                      : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
-                  }`}
-                />
-                {errors.ticker && (
-                  <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
-                    {errors.ticker}
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label htmlFor="req-email" className="block text-sm font-medium text-slate-900 mb-1.5">
-                  알림 받을 이메일 <span className="text-red-600">*</span>
-                </label>
-                <input
-                  id="req-email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                    if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
-                  }}
-                  placeholder="example@email.com"
-                  aria-invalid={Boolean(errors.email)}
-                  className={`w-full px-3.5 py-2.5 text-sm rounded-lg border bg-white text-slate-900 focus:outline-none focus:ring-2 ${
-                    errors.email
-                      ? 'border-red-500 focus:border-red-600 focus:ring-red-200'
-                      : 'border-slate-300 focus:border-blue-900 focus:ring-blue-900/15'
-                  }`}
-                />
-                {errors.email && (
-                  <p role="alert" className="mt-1.5 text-xs font-medium text-red-600">
-                    {errors.email}
-                  </p>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3 px-4 text-sm font-semibold text-white bg-blue-900 hover:bg-blue-800 rounded-lg transition-colors cursor-pointer min-h-[44px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-900"
-              >
-                기업 분석 요청 제출하기
-              </button>
-            </form>
           </div>
 
           {/* REQ-13: Traffic-light Rule Guide & Mini Calculator */}

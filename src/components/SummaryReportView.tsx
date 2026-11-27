@@ -40,6 +40,28 @@ export function SummaryReportView({
   onBackExplore,
 }: SummaryReportViewProps) {
   const [toastVisible, setToastVisible] = useState(false);
+  const [liveCompany, setLiveCompany] = useState<CompanyProfile>(company);
+  const [dataSource, setDataSource] = useState<'baseline' | 'opendart'>('baseline');
+
+  useEffect(() => {
+    setLiveCompany(company);
+    setDataSource('baseline');
+    let active = true;
+    fetch(`/api/companies/${encodeURIComponent(company.code)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((payload) => {
+        if (active && payload?.company) {
+          setLiveCompany(payload.company);
+          setDataSource(payload.source === 'opendart' ? 'opendart' : 'baseline');
+        }
+      })
+      .catch(() => {
+        // Fallback smoothly to initial baseline company data
+      });
+    return () => {
+      active = false;
+    };
+  }, [company]);
 
   useEffect(() => {
     if (!toastVisible) return;
@@ -47,14 +69,16 @@ export function SummaryReportView({
     return () => window.clearTimeout(timer);
   }, [toastVisible]);
 
+  const activeCompany = liveCompany;
+
   const trafficLight = evaluateTrafficLight(
-    company.operatingMargin,
-    company.debtRatio,
-    company.currentRatio
+    activeCompany.operatingMargin,
+    activeCompany.debtRatio,
+    activeCompany.currentRatio
   );
 
   const handleShare = async () => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}#summary/${company.code}`;
+    const shareUrl = `${window.location.origin}/#summary/${activeCompany.code}`;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(shareUrl);
@@ -74,19 +98,19 @@ export function SummaryReportView({
 
   // Chart.js 3-Year Revenue & Operating Profit Bar Chart Data (REQ-05)
   const barData = {
-    labels: company.yearly.map((y) => `${y.year}년`),
+    labels: activeCompany.yearly.map((y) => `${y.year}년`),
     datasets: [
       {
         label: '매출액 (조 원)',
-        data: company.yearly.map((y) => y.revenue),
+        data: activeCompany.yearly.map((y) => y.revenue),
         backgroundColor: '#1E3A8A',
         borderRadius: 4,
         barPercentage: 0.65,
       },
       {
         label: '영업이익 (조 원)',
-        data: company.yearly.map((y) => y.operatingProfit),
-        backgroundColor: company.yearly.map((y) =>
+        data: activeCompany.yearly.map((y) => y.operatingProfit),
+        backgroundColor: activeCompany.yearly.map((y) =>
           y.operatingProfit >= 0 ? '#059669' : '#DC2626'
         ),
         borderRadius: 4,
@@ -129,8 +153,8 @@ export function SummaryReportView({
             if (idx > 0) {
               const prevVal =
                 datasetIdx === 0
-                  ? company.yearly[idx - 1].revenue
-                  : company.yearly[idx - 1].operatingProfit;
+                  ? activeCompany.yearly[idx - 1].revenue
+                  : activeCompany.yearly[idx - 1].operatingProfit;
 
               if (prevVal === 0) {
                 yoyText = '전년 0';
@@ -170,12 +194,12 @@ export function SummaryReportView({
 
   // Chart.js Debt Ratio Semicircle Gauge (REQ-05)
   const maxGaugeScale = 250;
-  const clampedDebt = Math.min(company.debtRatio, maxGaugeScale);
+  const clampedDebt = Math.min(activeCompany.debtRatio, maxGaugeScale);
   const remainingGauge = Math.max(0, maxGaugeScale - clampedDebt);
   const gaugeColor =
-    company.debtRatio <= 120
+    activeCompany.debtRatio <= 120
       ? '#059669'
-      : company.debtRatio <= 200
+      : activeCompany.debtRatio <= 200
         ? '#D97706'
         : '#DC2626';
 
@@ -202,15 +226,15 @@ export function SummaryReportView({
         callbacks: {
           label: (ctx) =>
             ctx.dataIndex === 0
-              ? `현재 부채비율: ${company.debtRatio.toFixed(1)}%`
+              ? `현재 부채비율: ${activeCompany.debtRatio.toFixed(1)}%`
               : `게이지 최대 기준(250%) 대비 잔여 폭`,
         },
       },
     },
   };
 
-  const latestYearly = company.yearly[company.yearly.length - 1];
-  const prevYearly = company.yearly[company.yearly.length - 2];
+  const latestYearly = activeCompany.yearly[activeCompany.yearly.length - 1];
+  const prevYearly = activeCompany.yearly[activeCompany.yearly.length - 2];
   const revenueGrowth =
     prevYearly && prevYearly.revenue > 0
       ? ((latestYearly.revenue - prevYearly.revenue) / prevYearly.revenue) * 100
@@ -245,16 +269,18 @@ export function SummaryReportView({
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 pb-6 border-b border-slate-200">
             <div>
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-2">
-                <span>{company.sector}</span>
+                <span>{activeCompany.sector}</span>
                 <span aria-hidden="true">·</span>
-                <span className="font-mono">종목코드 {company.code}</span>
+                <span className="font-mono">종목코드 {activeCompany.code}</span>
                 <span aria-hidden="true">·</span>
                 <span className="font-mono tabular-nums">
-                  시가총액 {company.marketCapTrillion.toLocaleString('ko-KR')}조 원
+                  시가총액 {activeCompany.marketCapTrillion.toLocaleString('ko-KR')}조 원
                 </span>
+                <span aria-hidden="true">·</span>
+                <span>{dataSource === 'opendart' ? 'DART 공시 연동' : '기준 재무 데이터'}</span>
               </div>
               <h1 className="font-serif text-2xl sm:text-3xl font-bold text-slate-950 tracking-tight">
-                {company.name} 3분 재무 요약
+                {activeCompany.name} 3분 재무 요약
               </h1>
             </div>
 
@@ -303,7 +329,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="영업이익률" />
                 </span>
                 <span className="font-mono tabular-nums text-base sm:text-lg font-bold text-slate-950">
-                  {company.operatingMargin.toFixed(1)}%
+                  {activeCompany.operatingMargin.toFixed(1)}%
                 </span>
               </div>
               <div>
@@ -311,7 +337,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="부채비율" />
                 </span>
                 <span className="font-mono tabular-nums text-base sm:text-lg font-bold text-slate-950">
-                  {company.debtRatio.toFixed(1)}%
+                  {activeCompany.debtRatio.toFixed(1)}%
                 </span>
               </div>
               <div>
@@ -319,7 +345,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="유동비율" />
                 </span>
                 <span className="font-mono tabular-nums text-base sm:text-lg font-bold text-slate-950">
-                  {company.currentRatio.toFixed(0)}%
+                  {activeCompany.currentRatio.toFixed(0)}%
                 </span>
               </div>
             </div>
@@ -341,21 +367,21 @@ export function SummaryReportView({
             <div className="p-5 rounded-xl border border-emerald-200 bg-emerald-50/30">
               <p className="text-xs font-bold text-emerald-800 mb-2">[강점]</p>
               <p className="text-sm text-slate-800 leading-relaxed">
-                <RichTextWithTerms text={company.summary3Line.strength} />
+                <RichTextWithTerms text={activeCompany.summary3Line.strength} />
               </p>
             </div>
 
             <div className="p-5 rounded-xl border border-amber-200 bg-amber-50/30">
               <p className="text-xs font-bold text-amber-800 mb-2">[리스크]</p>
               <p className="text-sm text-slate-800 leading-relaxed">
-                <RichTextWithTerms text={company.summary3Line.risk} />
+                <RichTextWithTerms text={activeCompany.summary3Line.risk} />
               </p>
             </div>
 
             <div className="p-5 rounded-xl border border-blue-200 bg-blue-50/30">
               <p className="text-xs font-bold text-blue-900 mb-2">[종합 한줄]</p>
               <p className="text-sm font-medium text-slate-900 leading-relaxed">
-                <RichTextWithTerms text={company.summary3Line.oneLiner} />
+                <RichTextWithTerms text={activeCompany.summary3Line.oneLiner} />
               </p>
             </div>
           </div>
@@ -400,7 +426,7 @@ export function SummaryReportView({
                 <div className="absolute bottom-3 text-center pointer-events-none">
                   <span className="block text-[11px] text-slate-500">부채비율</span>
                   <span className="font-mono tabular-nums text-2xl font-bold text-slate-950">
-                    {company.debtRatio.toFixed(1)}%
+                    {activeCompany.debtRatio.toFixed(1)}%
                   </span>
                 </div>
               </div>
@@ -412,7 +438,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="PER" />
                 </span>
                 <span className="font-mono tabular-nums text-base font-bold text-slate-950">
-                  {company.per.toFixed(1)}배
+                  {activeCompany.per.toFixed(1)}배
                 </span>
               </div>
               <div>
@@ -420,7 +446,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="PBR" />
                 </span>
                 <span className="font-mono tabular-nums text-base font-bold text-slate-950">
-                  {company.pbr.toFixed(2)}배
+                  {activeCompany.pbr.toFixed(2)}배
                 </span>
               </div>
               <div>
@@ -428,7 +454,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="ROE" />
                 </span>
                 <span className="font-mono tabular-nums text-base font-bold text-slate-950">
-                  {company.roe.toFixed(1)}%
+                  {activeCompany.roe.toFixed(1)}%
                 </span>
               </div>
               <div>
@@ -436,7 +462,7 @@ export function SummaryReportView({
                   <InlineTermTooltip termKey="영업활동현금흐름" label="현금흐름 비율" />
                 </span>
                 <span className="font-mono tabular-nums text-base font-bold text-slate-950">
-                  {company.ocfRatio}%
+                  {activeCompany.ocfRatio}%
                 </span>
               </div>
             </div>
@@ -447,7 +473,7 @@ export function SummaryReportView({
         <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
           <span className="text-xs font-medium text-slate-600">다른 대표 기업 3분 요약 바로 보기</span>
           <div className="flex flex-wrap items-center gap-2">
-            {COMPANIES.filter((c) => c.code !== company.code)
+            {COMPANIES.filter((c) => c.code !== activeCompany.code)
               .slice(0, 5)
               .map((other) => (
                 <button
